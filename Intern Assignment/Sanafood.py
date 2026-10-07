@@ -53,6 +53,14 @@ if csv_path is None:
 deliveries = defaultdict(list)
 with open(csv_path, newline="", encoding="utf-8-sig") as f:
     reader = csv.DictReader(f)
+    if reader.fieldnames:
+        first_header = reader.fieldnames[0].strip().upper()
+        if first_header != "VBELN" and first_header.endswith("BELN"):
+            reader.fieldnames[0] = "VBELN"
+    if not reader.fieldnames or "VBELN" not in reader.fieldnames:
+        print("CSV file is missing the required VBELN delivery-number column.")
+        raise SystemExit(1)
+
     for row in reader:
         if not row:
             continue
