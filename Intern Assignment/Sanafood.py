@@ -1,90 +1,58 @@
 import csv
 from collections import defaultdict
-from pathlib import Path
 
-UNKNOWN_SHOPS = {"100999"}  # assumption: LMS knows every shop except this one
+CSV_FILE = "SAP_delivery_sample.csv"
+# Assumption from the brief: the LMS knows every shop except 100999
+UNKNOWN_SHOPS = {"100999"}
 
 
 def to_float(value):
-    if value is None:
-        return None
-
-    text = str(value).strip()
-    if not text:
-        return None
-
-    # Handle common SAP/European numeric formatting: 1.234,56 -> 1234.56
-    if "," in text and "." in text:
-        if text.rfind(",") > text.rfind("."):
-            text = text.replace(".", "").replace(",", ".")
-        else:
-            text = text.replace(",", "")
-    elif "," in text:
-        text = text.replace(",", ".")
-
+    """Return a number, or None if the value is empty or not a number."""
     try:
-        return float(text)
-    except ValueError:
+        return float(str(value).strip().replace(",", "."))
+    except (TypeError, ValueError):
         return None
 
 
-csv_path = None
-for candidate in [
-    Path(__file__).resolve().parent / "SAP_delivery_sample.csv",
-    Path(__file__).resolve().parent / "sap_delivery_sample.csv",
-    Path(__file__).resolve().parent / "delivery_sample.csv",
-    Path(__file__).resolve().parent / "Sanafood.csv",
-]:
-    if candidate.exists():
-        csv_path = candidate
-        break
+def normalize_header(header_name):
+    """Normalize malformed header names from the sample export."""
+    if header_name is None:
+        return ""
 
-if csv_path is None:
-    available = sorted(p.name for p in Path(__file__).resolve().parent.glob("*.csv"))
-    print("CSV file not found in the script directory.")
-    if available:
-        print(f"Found CSV files: {', '.join(available)}")
-    else:
-        print("Please place the delivery CSV next to this script and use one of the common names:")
-        print("SAP_delivery_sample.csv, sap_delivery_sample.csv, delivery_sample.csv, or Sanafood.csv")
-    raise SystemExit(1)
+    text = str(header_name).strip().upper()
+    if "BELN" in text and text.startswith("V"):
+        return "VBELN"
+    return text
 
 
+# csv.DictReader reads every value as text, so leading zeros are kept
+# (0080001234 stays 0080001234, 000010 stays 000010).
 deliveries = defaultdict(list)
-with open(csv_path, newline="", encoding="utf-8-sig") as f:
+with open(CSV_FILE, newline="", encoding="utf-8-sig") as f:
     reader = csv.DictReader(f)
     if reader.fieldnames:
-        first_header = reader.fieldnames[0].strip().upper()
-        if first_header != "VBELN" and first_header.endswith("BELN"):
-            reader.fieldnames[0] = "VBELN"
-    if not reader.fieldnames or "VBELN" not in reader.fieldnames:
-        print("CSV file is missing the required VBELN delivery-number column.")
-        raise SystemExit(1)
+        reader.fieldnames = [normalize_header(name) for name in reader.fieldnames]
 
     for row in reader:
-        if not row:
+        if not any((value or "").strip() for value in row.values()):
             continue
-        vbeln = (row.get("VBELN") or "").strip()
-        if not vbeln:
-            continue
-        deliveries[vbeln].append(row)
+        deliveries[row["VBELN"]].append(row)
 
 for vbeln, rows in deliveries.items():
-    first_row = rows[0]
-    shop_code = (first_row.get("KUNNR") or "").strip().lstrip("0") or "UNKNOWN"
-    name = first_row.get("NAME1") or first_row.get("NAME") or "Unknown shop"
-    problems, total = [], 0.0
+    shop_code = rows[0]["KUNNR"].lstrip("0")   # LMS shop_code has no leading zeros
+    problems, total_kg = [], 0.0
 
     for r in rows:
         weight = to_float(r.get("BRGEW", ""))
-        posnr = r.get("POSNR") or "?"
-        if weight is None:
-            problems.append(f"line {posnr}: missing weight")
+        if not weight:                          # missing, empty or 0
+            problems.append(f"line {r['POSNR']}: missing weight")
         else:
-            total += weight
+            total_kg += weight
 
     if shop_code in UNKNOWN_SHOPS:
         problems.append("unknown shop")
 
+    n = len(rows)
+    word = "item" if n == 1 else "items"
     flag = " | ISSUES: " + "; ".join(problems) if problems else ""
-    print(f"{vbeln} | {name} | {len(rows)} items | {total:.1f} kg{flag}")
+    print(f"{vbeln} | {rows[0]['NAME1']} | {n} {word} | {total_kg:.1f} kg{flag}")
